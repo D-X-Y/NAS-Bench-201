@@ -5,13 +5,7 @@ The design of our search space is inspired by that used in the most popular cell
 Each edge here is associated with an operation selected from a predefined operation set.
 For it to be applicable for all NAS algorithms, the search space defined in NAS-Bench-102 includes 4 nodes and 5 associated operation options, which generates 15,625 neural cell candidates in total.
 
-In this Markdown file, we provide:
-- [How to Use NAS-Bench-102](#how-to-use-nas-bench-102)
-- [10 NAS algorithms evaluated in our paper](#to-reproduce-10-baseline-nas-algorithms-in-nas-bench-102)
-
-Note: please use `PyTorch >= 1.2.0` and `Python >= 3.6.0`.
-
-Simply type `pip install nas-bench-102` to install our api.
+Simply type `pip install nas-bench-102` to install our api. Note that this package requires `PyTorch >= 1.2.0`.
 
 If you have any questions or issues, please post it at [here](https://github.com/D-X-Y/NAS-Projects/issues) or email me.
 
@@ -121,6 +115,12 @@ api.reload('{:}/{:}'.format(os.environ['TORCH_HOME'], 'NAS-BENCH-102-4-v1.0-arch
 
 weights = api.get_net_param(3, 'cifar10', None) # Obtaining the weights of all trials for the 3-th architecture on cifar10. It will returns a dict, where the key is the seed and the value is the trained weights.
 ```
+
+
+### Others
+
+If you want to re-build a new NAS benchmark, please see another repo [NAS-Projects](https://github.com/D-X-Y/NAS-Projects/blob/master/NAS-Bench-102.md#instruction-to-re-generate-nas-bench-102).
+If you want to run 10 NAS methods in our paper, please see [here](https://github.com/D-X-Y/NAS-Projects/blob/master/NAS-Bench-102.md#to-reproduce-10-baseline-nas-algorithms-in-nas-bench-102).
 
 # Citation
 
