@@ -98,3 +98,5 @@ data
 *.sh
 main_main.py
 dist
+build
+*.egg-info
