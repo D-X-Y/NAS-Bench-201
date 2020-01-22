@@ -162,11 +162,36 @@ class NASBench201API(object):
     archresult = arch2infos[index]
     return archresult.get_net_param(dataset, seed)
 
+  # obtain the cost metric for the `index`-th architecture on a dataset
+  def get_cost_info(self, index, dataset, use_12epochs_result=False):
+    if use_12epochs_result: basestr, arch2infos = '12epochs' , self.arch2infos_less
+    else                  : basestr, arch2infos = '200epochs', self.arch2infos_full
+    archresult = arch2infos[index]
+    return archresult.get_comput_costs(dataset)
+
   # obtain the metric for the `index`-th architecture
+  # `dataset` indicates the dataset:
+  #   'cifar10-valid'  : using the proposed train set of CIFAR-10 as the training set
+  #   'cifar10'        : using the proposed train+valid set of CIFAR-10 as the training set
+  #   'cifar100'       : using the proposed train set of CIFAR-100 as the training set
+  #   'ImageNet16-120' : using the proposed train set of ImageNet-16-120 as the training set
+  # `iepoch` indicates the index of training epochs from 0 to 11/199.
+  #   When iepoch=None, it will return the metric for the last training epoch
+  #   When iepoch=11, it will return the metric for the 11-th training epoch (starting from 0)
+  # `use_12epochs_result` indicates different hyper-parameters for training
+  #   When use_12epochs_result=True, it trains the network with 12 epochs and the LR decayed from 0.1 to 0 within 12 epochs
+  #   When use_12epochs_result=False, it trains the network with 200 epochs and the LR decayed from 0.1 to 0 within 200 epochs
+  # `is_random`
+  #   When is_random=True, the performance of a random architecture will be returned
+  #   When is_random=False, the performanceo of all trials will be averaged.
   def get_more_info(self, index, dataset, iepoch=None, use_12epochs_result=False, is_random=True):
     if use_12epochs_result: basestr, arch2infos = '12epochs' , self.arch2infos_less
     else                  : basestr, arch2infos = '200epochs', self.arch2infos_full
     archresult = arch2infos[index]
+    # if randomly select one trial, select the seed at first
+    if isinstance(is_random, bool) and is_random:
+      seeds = archresult.get_dataset_seeds(dataset)
+      is_random = random.choice(seeds)
     if dataset == 'cifar10-valid':
       train_info = archresult.get_metrics(dataset, 'train'   , iepoch=iepoch, is_random=is_random)
       valid_info = archresult.get_metrics(dataset, 'x-valid' , iepoch=iepoch, is_random=is_random)
@@ -177,6 +202,7 @@ class NASBench201API(object):
       total      = train_info['iepoch'] + 1
       xifo = {'train-loss'    : train_info['loss'],
               'train-accuracy': train_info['accuracy'],
+              'train-per-time': None if train_info['all_time'] is None else train_info['all_time'] / total,
               'train-all-time': train_info['all_time'],
               'valid-loss'    : valid_info['loss'],
               'valid-accuracy': valid_info['accuracy'],
@@ -188,21 +214,32 @@ class NASBench201API(object):
       return xifo
     else:
       train_info = archresult.get_metrics(dataset, 'train'   , iepoch=iepoch, is_random=is_random)
-      if dataset == 'cifar10':
-        test__info = archresult.get_metrics(dataset, 'ori-test', iepoch=iepoch, is_random=is_random)
-      else:
-        test__info = archresult.get_metrics(dataset, 'x-test', iepoch=iepoch, is_random=is_random)
+      try:
+        if dataset == 'cifar10':
+          test__info = archresult.get_metrics(dataset, 'ori-test', iepoch=iepoch, is_random=is_random)
+        else:
+          test__info = archresult.get_metrics(dataset, 'x-test', iepoch=iepoch, is_random=is_random)
+      except:
+        test__info = None
       try:
         valid_info = archresult.get_metrics(dataset, 'x-valid', iepoch=iepoch, is_random=is_random)
       except:
         valid_info = None
+      try:
+        est_valid_info = archresult.get_metrics(dataset, 'ori-test', iepoch=iepoch, is_random=is_random)
+      except:
+        est_valid_info = None
       xifo = {'train-loss'    : train_info['loss'],
-              'train-accuracy': train_info['accuracy'],
-              'test-loss'     : test__info['loss'],
-              'test-accuracy' : test__info['accuracy']}
+              'train-accuracy': train_info['accuracy']}
+      if test__info is not None:
+        xifo['test-loss'] = test__info['loss'],
+        xifo['test-accuracy'] = test__info['accuracy']
       if valid_info is not None:
         xifo['valid-loss'] = valid_info['loss']
         xifo['valid-accuracy'] = valid_info['accuracy']
+      if est_valid_info is not None:
+        xifo['est-valid-loss'] = est_valid_info['loss']
+        xifo['est-valid-accuracy'] = est_valid_info['accuracy']
       return xifo
 
   def show(self, index=-1):
@@ -231,6 +268,57 @@ class NASBench201API(object):
           print('<' * 40 + '------------' + '<' * 40)
       else:
         print('This index ({:}) is out of range (0~{:}).'.format(index, len(self.meta_archs)))
+
+  # This func shows how to read the string-based architecture encoding
+  #   the same as the `str2structure` func in `AutoDL-Projects/lib/models/cell_searchs/genotypes.py`
+  # Usage:
+  #   arch = api.str2lists( '|nor_conv_1x1~0|+|none~0|none~1|+|none~0|none~1|skip_connect~2|' )
+  #   print ('there are {:} nodes in this arch'.format(len(arch)+1)) # arch is a list
+  #   for i, node in enumerate(arch):
+  #     print('the {:}-th node is the sum of these {:} nodes with op: {:}'.format(i+1, len(node), node))
+  @staticmethod
+  def str2lists(xstr):
+    assert isinstance(xstr, str), 'must take string (not {:}) as input'.format(type(xstr))
+    nodestrs = xstr.split('+')
+    genotypes = []
+    for i, node_str in enumerate(nodestrs):
+      inputs = list(filter(lambda x: x != '', node_str.split('|')))
+      for xinput in inputs: assert len(xinput.split('~')) == 2, 'invalid input length : {:}'.format(xinput)
+      inputs = ( xi.split('~') for xi in inputs )
+      input_infos = tuple( (op, int(IDX)) for (op, IDX) in inputs)
+      genotypes.append( input_infos )
+    return genotypes
+
+  # This func shows how to convert the string-based architecture encoding to the encoding strategy in NAS-Bench-101
+  # Usage:
+  #   # this will return a numpy matrix (2-D np.array)
+  #   matrix = api.str2matrix( '|nor_conv_1x1~0|+|none~0|none~1|+|none~0|none~1|skip_connect~2|' )
+  #   # This matrix is 4-by-4 matrix representing a cell with 4 nodes (only the lower left triangle is useful).
+  #      [ [0, 0, 0, 0],  # the first line represents the input (0-th) node
+  #        [2, 0, 0, 0],  # the second line represents the 1-st node, is calculated by 2-th-op( 0-th-node )
+  #        [0, 0, 0, 0],  # the third line represents the 2-nd node, is calculated by 0-th-op( 0-th-node ) + 0-th-op( 1-th-node )
+  #        [0, 0, 1, 0] ] # the fourth line represents the 3-rd node, is calculated by 0-th-op( 0-th-node ) + 0-th-op( 1-th-node ) + 1-th-op( 2-th-node )
+  #   In NAS-Bench-201 search space, 0-th-op is 'none', 1-th-op is 'skip_connect'
+  #      2-th-op is 'nor_conv_1x1', 3-th-op is 'nor_conv_3x3', 4-th-op is 'avg_pool_3x3'.
+  @staticmethod
+  def str2matrix(xstr):
+    assert isinstance(xstr, str), 'must take string (not {:}) as input'.format(type(xstr))
+    # this only support NAS-Bench-201 search space
+    # this defination will be consistant with this line https://github.com/D-X-Y/AutoDL-Projects/blob/master/lib/models/cell_operations.py#L24
+    # If a node has two input-edges from the same node, this function does not work. One edge will be overleaped.
+    NAS_BENCH_201         = ['none', 'skip_connect', 'nor_conv_1x1', 'nor_conv_3x3', 'avg_pool_3x3']
+    nodestrs = xstr.split('+')
+    num_nodes = len(nodestrs) + 1
+    matrix = np.zeros((num_nodes,num_nodes))
+    for i, node_str in enumerate(nodestrs):
+      inputs = list(filter(lambda x: x != '', node_str.split('|')))
+      for xinput in inputs: assert len(xinput.split('~')) == 2, 'invalid input length : {:}'.format(xinput)
+      for xi in inputs:
+        op, idx = xi.split('~')
+        if op not in NAS_BENCH_201: raise ValueError('this op ({:}) is not in {:}'.format(op, NAS_BENCH_201))
+        op_idx, node_idx = NAS_BENCH_201.index(op), int(idx)
+        matrix[i+1, node_idx] = op_idx
+    return matrix
 
 
 
@@ -277,14 +365,20 @@ class ArchResults(object):
         info = result.get_eval(setname, iepoch)
       for key, value in info.items(): infos[key].append( value )
     return_info = dict()
-    if is_random:
+    if isinstance(is_random, bool) and is_random: # randomly select one
       index = random.randint(0, len(results)-1)
       for key, value in infos.items(): return_info[key] = value[index]
-    else:
+    elif isinstance(is_random, bool) and not is_random: # average
       for key, value in infos.items():
         if len(value) > 0 and value[0] is not None:
           return_info[key] = np.mean(value)
         else: return_info[key] = None
+    elif isinstance(is_random, int): # specify the seed
+      if is_random not in x_seeds: raise ValueError('can not find random seed ({:}) from {:}'.format(is_random, x_seeds))
+      index = x_seeds.index(is_random)
+      for key, value in infos.items(): return_info[key] = value[index]
+    else:
+      raise ValueError('invalid value for is_random: {:}'.format(is_random))
     return return_info
 
   def show(self, is_print=False):
@@ -292,6 +386,9 @@ class ArchResults(object):
 
   def get_dataset_names(self):
     return list(self.dataset_seed.keys())
+
+  def get_dataset_seeds(self, dataset):
+    return copy.deepcopy( self.dataset_seed[dataset] )
 
   def get_net_param(self, dataset, seed=None):
     if seed is None:
