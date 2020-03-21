@@ -1,13 +1,17 @@
-##################################################
-# Copyright (c) Xuanyi Dong [GitHub D-X-Y], 2019 #
+#####################################################
+# Copyright (c) Xuanyi Dong [GitHub D-X-Y], 2019.08 #
 ############################################################################################
 # NAS-Bench-201: Extending the Scope of Reproducible Neural Architecture Search, ICLR 2020 #
 ############################################################################################
-# NAS-Bench-201-v1_0-e61699.pth : 6219 architectures are trained once, 1621 architectures are trained twice, 7785 architectures are trained three times. `LESS` only supports CIFAR10-VALID.
+# The history of benchmark files:
+# [2020.02.25] NAS-Bench-201-v1_0-e61699.pth : 6219 architectures are trained once, 1621 architectures are trained twice, 7785 architectures are trained three times. `LESS` only supports CIFAR10-VALID.
+# [2020.03.16] NAS-Bench-201-v1_1-096897.pth : 2225 architectures are trained once, 5439 archiitectures are trained twice, 7961 architectures are trained three times on all training sets. For the hyper-parameters with the total epochs of 12, each model is trained on CIFAR-10, CIFAR-100, ImageNet16-120 once, and is trained on CIFAR-10-VALID twice.
 #
+# I'm still actively enhancing this benchmark. Please feel free to contact me if you have any question w.r.t. NAS-Bench-201.
 #
-#
-import os, sys, copy, random, torch, numpy as np
+import os, copy, random, torch, numpy as np
+from pathlib import Path
+from typing import List, Text, Union, Dict
 from collections import OrderedDict, defaultdict
 
 
@@ -18,8 +22,7 @@ def print_information(information, extra_info=None, show=False):
     return 'loss = {:.3f}, top1 = {:.2f}%'.format(loss, acc)
 
   for ida, dataset in enumerate(dataset_names):
-    #flop, param, latency = information.get_comput_costs(dataset)
-    metric = information.get_comput_costs(dataset)
+    metric = information.get_compute_costs(dataset)
     flop, param, latency = metric['flops'], metric['params'], metric['latency']
     str1 = '{:14s} FLOP={:6.2f} M, Params={:.3f} MB, latency={:} ms.'.format(dataset, flop, param, '{:.2f}'.format(latency*1000) if latency is not None and latency > 0 else None)
     train_info = information.get_metrics(dataset, 'train')
@@ -37,18 +40,25 @@ def print_information(information, extra_info=None, show=False):
   if show: print('\n'.join(strings))
   return strings
 
-
+"""
+This is the class for API of NAS-Bench-201.
+"""
 class NASBench201API(object):
 
-  def __init__(self, file_path_or_dict, verbose=True):
-    if isinstance(file_path_or_dict, str):
+  """ The initialization function that takes the dataset file path (or a dict loaded from that path) as input. """
+  def __init__(self, file_path_or_dict: Union[Text, Dict], verbose: bool=True):
+    self.filename = None
+    if isinstance(file_path_or_dict, str) or isinstance(file_path_or_dict, Path):
+      file_path_or_dict = str(file_path_or_dict)
       if verbose: print('try to create the NAS-Bench-201 api from {:}'.format(file_path_or_dict))
       assert os.path.isfile(file_path_or_dict), 'invalid path : {:}'.format(file_path_or_dict)
-      file_path_or_dict = torch.load(file_path_or_dict)
+      self.filename = Path(file_path_or_dict).name
+      file_path_or_dict = torch.load(file_path_or_dict, map_location='cpu')
     elif isinstance(file_path_or_dict, dict):
       file_path_or_dict = copy.deepcopy( file_path_or_dict )
     else: raise ValueError('invalid type : {:} not in [str, dict]'.format(type(file_path_or_dict)))
     assert isinstance(file_path_or_dict, dict), 'It should be a dict instead of {:}'.format(type(file_path_or_dict))
+    self.verbose = verbose # [TODO] a flag indicating whether to print more logs
     keys = ('meta_archs', 'arch2infos', 'evaluated_indexes')
     for key in keys: assert key in file_path_or_dict, 'Can not find key[{:}] in the dict'.format(key)
     self.meta_archs = copy.deepcopy( file_path_or_dict['meta_archs'] )
@@ -65,18 +75,25 @@ class NASBench201API(object):
       assert arch not in self.archstr2index, 'This [{:}]-th arch {:} already in the dict ({:}).'.format(idx, arch, self.archstr2index[arch])
       self.archstr2index[ arch ] = idx
 
-  def __getitem__(self, index):
+  def __getitem__(self, index: int):
     return copy.deepcopy( self.meta_archs[index] )
 
   def __len__(self):
     return len(self.meta_archs)
 
   def __repr__(self):
-    return ('{name}({num}/{total} architectures)'.format(name=self.__class__.__name__, num=len(self.evaluated_indexes), total=len(self.meta_archs)))
+    return ('{name}({num}/{total} architectures, file={filename})'.format(name=self.__class__.__name__, num=len(self.evaluated_indexes), total=len(self.meta_archs), filename=self.filename))
 
   def random(self):
+    """Return a random index of all architectures."""
     return random.randint(0, len(self.meta_archs)-1)
 
+  # This function is used to query the index of an architecture in the search space.
+  # The input arch can be an architecture string such as '|nor_conv_3x3~0|+|nor_conv_3x3~0|avg_pool_3x3~1|+|skip_connect~0|nor_conv_3x3~1|skip_connect~2|'
+  # or an instance that has the 'tostr' function that can generate the architecture string.
+  # This function will return the index.
+  #   If return -1, it means this architecture is not in the search space.
+  #   Otherwise, it will return an int in [0, the-number-of-candidates-in-the-search-space).
   def query_index_by_arch(self, arch):
     if isinstance(arch, str):
       if arch in self.archstr2index: arch_index = self.archstr2index[ arch ]
@@ -87,16 +104,43 @@ class NASBench201API(object):
     else: arch_index = -1
     return arch_index
 
-  def reload(self, archive_root, index):
+  def reload(self, archive_root: Text, index: int):
+    """Overwrite all information of the 'index'-th architecture in the search space.
+         It will load its data from 'archive_root'.
+    """
     assert os.path.isdir(archive_root), 'invalid directory : {:}'.format(archive_root)
     xfile_path = os.path.join(archive_root, '{:06d}-FULL.pth'.format(index))
     assert 0 <= index < len(self.meta_archs), 'invalid index of {:}'.format(index)
     assert os.path.isfile(xfile_path), 'invalid data path : {:}'.format(xfile_path)
-    xdata = torch.load(xfile_path)
+    xdata = torch.load(xfile_path, map_location='cpu')
     assert isinstance(xdata, dict) and 'full' in xdata and 'less' in xdata, 'invalid format of data in {:}'.format(xfile_path)
+    if index in self.arch2infos_less: del self.arch2infos_less[index]
+    if index in self.arch2infos_full: del self.arch2infos_full[index]
     self.arch2infos_less[index] = ArchResults.create_from_state_dict( xdata['less'] )
     self.arch2infos_full[index] = ArchResults.create_from_state_dict( xdata['full'] )
+
+  def clear_params(self, index: int, use_12epochs_result: Union[bool, None]):
+    """Remove the architecture's weights to save memory.
+    :arg
+      index: the index of the target architecture
+      use_12epochs_result: a flag to controll how to clear the parameters.
+        -- None: clear all the weights in both `less` and `full`, which indicates the training hyper-parameters.
+        -- True: clear all the weights in arch2infos_less, which by default is 12-epoch-training result.
+        -- False: clear all the weights in arch2infos_full, which by default is 200-epoch-training result.
+    """
+    if use_12epochs_result is None:
+      self.arch2infos_less[index].clear_params()
+      self.arch2infos_full[index].clear_params()
+    else:
+      if use_12epochs_result: arch2infos = self.arch2infos_less
+      else                  : arch2infos = self.arch2infos_full
+      arch2infos[index].clear_params()
   
+  # This function is used to query the information of a specific archiitecture
+  # 'arch' can be an architecture index or an architecture string
+  # When use_12epochs_result=True, the hyper-parameters used to train a model are in 'configs/nas-benchmark/CIFAR.config'
+  # When use_12epochs_result=False, the hyper-parameters used to train a model are in 'configs/nas-benchmark/LESS.config'
+  # The difference between these two configurations are the number of training epochs, which is 200 in CIFAR.config and 12 in LESS.config.
   def query_by_arch(self, arch, use_12epochs_result=False):
     if isinstance(arch, int):
       arch_index = arch
@@ -112,10 +156,20 @@ class NASBench201API(object):
       print ('Find this arch-index : {:}, but this arch is not evaluated.'.format(arch_index))
       return None
 
-  # query information with the training of 12 epochs or 200 epochs
-  # if dataname is None, return the ArchResults
+  # This 'query_by_index' function is used to query information with the training of 12 epochs or 200 epochs.
+  # ------
+  # If use_12epochs_result=True, we train the model by 12 epochs (see config in configs/nas-benchmark/LESS.config)
+  # If use_12epochs_result=False, we train the model by 200 epochs (see config in configs/nas-benchmark/CIFAR.config)
+  # ------
+  # If dataname is None, return the ArchResults
   # else, return a dict with all trials on that dataset (the key is the seed)
-  def query_by_index(self, arch_index, dataname=None, use_12epochs_result=False):
+  # Options are 'cifar10-valid', 'cifar10', 'cifar100', 'ImageNet16-120'.
+  #  -- cifar10-valid : training the model on the CIFAR-10 training set.
+  #  -- cifar10 : training the model on the CIFAR-10 training + validation set.
+  #  -- cifar100 : training the model on the CIFAR-100 training set.
+  #  -- ImageNet16-120 : training the model on the ImageNet16-120 training set.
+  def query_by_index(self, arch_index: int, dataname: Union[None, Text] = None,
+                     use_12epochs_result: bool = False):
     if use_12epochs_result: basestr, arch2infos = '12epochs' , self.arch2infos_less
     else                  : basestr, arch2infos = '200epochs', self.arch2infos_full
     assert arch_index in arch2infos, 'arch_index [{:}] does not in arch2info with {:}'.format(arch_index, basestr)
@@ -134,11 +188,12 @@ class NASBench201API(object):
     return archInfo
 
   def find_best(self, dataset, metric_on_set, FLOP_max=None, Param_max=None, use_12epochs_result=False):
+    """Find the architecture with the highest accuracy based on some constraints."""
     if use_12epochs_result: basestr, arch2infos = '12epochs' , self.arch2infos_less
     else                  : basestr, arch2infos = '200epochs', self.arch2infos_full
     best_index, highest_accuracy = -1, None
     for i, idx in enumerate(self.evaluated_indexes):
-      info = arch2infos[idx].get_comput_costs(dataset)
+      info = arch2infos[idx].get_compute_costs(dataset)
       flop, param, latency = info['flops'], info['params'], info['latency']
       if FLOP_max  is not None and flop  > FLOP_max : continue
       if Param_max is not None and param > Param_max: continue
@@ -150,24 +205,62 @@ class NASBench201API(object):
         best_index, highest_accuracy = idx, accuracy
     return best_index, highest_accuracy
 
-  # return the topology structure of the `index`-th architecture
-  def arch(self, index):
+  def arch(self, index: int):
+    """Return the topology structure of the `index`-th architecture."""
     assert 0 <= index < len(self.meta_archs), 'invalid index : {:} vs. {:}.'.format(index, len(self.meta_archs))
     return copy.deepcopy(self.meta_archs[index])
 
-  # obtain the trained weights of the `index`-th architecture on `dataset` with the seed of `seed`
   def get_net_param(self, index, dataset, seed, use_12epochs_result=False):
-    if use_12epochs_result: basestr, arch2infos = '12epochs' , self.arch2infos_less
-    else                  : basestr, arch2infos = '200epochs', self.arch2infos_full
-    archresult = arch2infos[index]
-    return archresult.get_net_param(dataset, seed)
+    """
+      This function is used to obtain the trained weights of the `index`-th architecture on `dataset` with the seed of `seed`
+      Args [seed]:
+        -- None : return a dict containing the trained weights of all trials, where each key is a seed and its corresponding value is the weights.
+        -- a interger : return the weights of a specific trial, whose seed is this interger.
+      Args [use_12epochs_result]:
+        -- True : train the model by 12 epochs
+        -- False : train the model by 200 epochs
+    """
+    if use_12epochs_result: arch2infos = self.arch2infos_less
+    else: arch2infos = self.arch2infos_full
+    arch_result = arch2infos[index]
+    return arch_result.get_net_param(dataset, seed)
 
-  # obtain the cost metric for the `index`-th architecture on a dataset
-  def get_cost_info(self, index, dataset, use_12epochs_result=False):
-    if use_12epochs_result: basestr, arch2infos = '12epochs' , self.arch2infos_less
-    else                  : basestr, arch2infos = '200epochs', self.arch2infos_full
-    archresult = arch2infos[index]
-    return archresult.get_comput_costs(dataset)
+  def get_net_config(self, index: int, dataset: Text):
+    """
+      This function is used to obtain the configuration for the `index`-th architecture on `dataset`.
+      Args [dataset] (4 possible options):
+        -- cifar10-valid : training the model on the CIFAR-10 training set.
+        -- cifar10 : training the model on the CIFAR-10 training + validation set.
+        -- cifar100 : training the model on the CIFAR-100 training set.
+        -- ImageNet16-120 : training the model on the ImageNet16-120 training set.
+      This function will return a dict.
+      ========= Some examlpes for using this function:
+      config = api.get_net_config(128, 'cifar10')
+    """
+    archresult = self.arch2infos_full[index]
+    all_results = archresult.query(dataset, None)
+    if len(all_results) == 0: raise ValueError('can not find one valid trial for the {:}-th architecture on {:}'.format(index, dataset))
+    for seed, result in all_results.items():
+      return result.get_config(None)
+      #print ('SEED [{:}] : {:}'.format(seed, result))
+    raise ValueError('Impossible to reach here!')
+
+  def get_cost_info(self, index: int, dataset: Text, use_12epochs_result: bool = False) -> Dict[Text, float]:
+    """To obtain the cost metric for the `index`-th architecture on a dataset."""
+    if use_12epochs_result: arch2infos = self.arch2infos_less
+    else: arch2infos = self.arch2infos_full
+    arch_result = arch2infos[index]
+    return arch_result.get_compute_costs(dataset)
+
+  def get_latency(self, index: int, dataset: Text, use_12epochs_result: bool = False) -> float:
+    """
+    To obtain the latency of the network (by default it will return the latency with the batch size of 256).
+    :param index: the index of the target architecture
+    :param dataset: the dataset name (cifar10-valid, cifar10, cifar100, ImageNet16-120)
+    :return: return a float value in seconds
+    """
+    cost_dict = self.get_cost_info(index, dataset, use_12epochs_result)
+    return cost_dict['latency']
 
   # obtain the metric for the `index`-th architecture
   # `dataset` indicates the dataset:
@@ -184,7 +277,66 @@ class NASBench201API(object):
   # `is_random`
   #   When is_random=True, the performance of a random architecture will be returned
   #   When is_random=False, the performanceo of all trials will be averaged.
-  def get_more_info(self, index, dataset, iepoch=None, use_12epochs_result=False, is_random=True):
+  def get_more_info(self, index: int, dataset, iepoch=None, use_12epochs_result=False, is_random=True):
+    if use_12epochs_result: basestr, arch2infos = '12epochs' , self.arch2infos_less
+    else                  : basestr, arch2infos = '200epochs', self.arch2infos_full
+    archresult = arch2infos[index]
+    # if randomly select one trial, select the seed at first
+    if isinstance(is_random, bool) and is_random:
+      seeds = archresult.get_dataset_seeds(dataset)
+      is_random = random.choice(seeds)
+    # collect the training information
+    train_info = archresult.get_metrics(dataset, 'train', iepoch=iepoch, is_random=is_random)
+    total = train_info['iepoch'] + 1
+    xinfo = {'train-loss'    : train_info['loss'],
+             'train-accuracy': train_info['accuracy'],
+             'train-per-time': train_info['all_time'] / total,
+             'train-all-time': train_info['all_time']}
+    # collect the evaluation information
+    if dataset == 'cifar10-valid':
+      valid_info = archresult.get_metrics(dataset, 'x-valid', iepoch=iepoch, is_random=is_random)
+      try:
+        test_info = archresult.get_metrics(dataset, 'ori-test', iepoch=iepoch, is_random=is_random)
+      except:
+        test_info = None
+      valtest_info = None
+    else:
+      try: # collect results on the proposed test set
+        if dataset == 'cifar10':
+          test_info = archresult.get_metrics(dataset, 'ori-test', iepoch=iepoch, is_random=is_random)
+        else:
+          test_info = archresult.get_metrics(dataset, 'x-test', iepoch=iepoch, is_random=is_random)
+      except:
+        test_info = None
+      try: # collect results on the proposed validation set
+        valid_info = archresult.get_metrics(dataset, 'x-valid', iepoch=iepoch, is_random=is_random)
+      except:
+        valid_info = None
+      try:
+        if dataset != 'cifar10':
+          valtest_info = archresult.get_metrics(dataset, 'ori-test', iepoch=iepoch, is_random=is_random)
+        else:
+          valtest_info = None
+      except:
+        valtest_info = None
+    if valid_info is not None:
+      xinfo['valid-loss'] = valid_info['loss']
+      xinfo['valid-accuracy'] = valid_info['accuracy']
+      xinfo['valid-per-time'] = valid_info['all_time'] / total
+      xinfo['valid-all-time'] = valid_info['all_time']
+    if test_info is not None:
+      xinfo['test-loss'] = test_info['loss']
+      xinfo['test-accuracy'] = test_info['accuracy']
+      xinfo['test-per-time'] = test_info['all_time'] / total
+      xinfo['test-all-time'] = test_info['all_time']
+    if valtest_info is not None:
+      xinfo['valtest-loss'] = valtest_info['loss']
+      xinfo['valtest-accuracy'] = valtest_info['accuracy']
+      xinfo['valtest-per-time'] = valtest_info['all_time'] / total
+      xinfo['valtest-all-time'] = valtest_info['all_time']
+    return xinfo
+  """ # The following logic is deprecated after March 15 2020, where the benchmark file upgrades from NAS-Bench-201-v1_0-e61699.pth to NAS-Bench-201-v1_1-096897.pth.
+  def get_more_info(self, index: int, dataset, iepoch=None, use_12epochs_result=False, is_random=True):
     if use_12epochs_result: basestr, arch2infos = '12epochs' , self.arch2infos_less
     else                  : basestr, arch2infos = '200epochs', self.arch2infos_full
     archresult = arch2infos[index]
@@ -241,18 +393,26 @@ class NASBench201API(object):
         xifo['est-valid-loss'] = est_valid_info['loss']
         xifo['est-valid-accuracy'] = est_valid_info['accuracy']
       return xifo
+  """
 
-  def show(self, index=-1):
+  def show(self, index: int = -1) -> None:
+    """
+    This function will print the information of a specific (or all) architecture(s).
+
+    :param index: If the index < 0: it will loop for all architectures and print their information one by one.
+                  else: it will print the information of the 'index'-th archiitecture.
+    :return: nothing
+    """
     if index < 0: # show all architectures
       print(self)
       for i, idx in enumerate(self.evaluated_indexes):
         print('\n' + '-' * 10 + ' The ({:5d}/{:5d}) {:06d}-th architecture! '.format(i, len(self.evaluated_indexes), idx) + '-'*10)
         print('arch : {:}'.format(self.meta_archs[idx]))
         strings = print_information(self.arch2infos_full[idx])
-        print('>' * 40 + ' 200 epochs ' + '>' * 40)
+        print('>' * 40 + ' {:03d} epochs '.format(self.arch2infos_full[idx].get_total_epoch()) + '>' * 40)
         print('\n'.join(strings))
         strings = print_information(self.arch2infos_less[idx])
-        print('>' * 40 + '  12 epochs ' + '>' * 40)
+        print('>' * 40 + ' {:03d} epochs '.format(self.arch2infos_less[idx].get_total_epoch()) + '>' * 40)
         print('\n'.join(strings))
         print('<' * 40 + '------------' + '<' * 40)
     else:
@@ -260,28 +420,54 @@ class NASBench201API(object):
         if index not in self.evaluated_indexes: print('The {:}-th architecture has not been evaluated or not saved.'.format(index))
         else:
           strings = print_information(self.arch2infos_full[index])
-          print('>' * 40 + ' 200 epochs ' + '>' * 40)
+          print('>' * 40 + ' {:03d} epochs '.format(self.arch2infos_full[index].get_total_epoch()) + '>' * 40)
           print('\n'.join(strings))
           strings = print_information(self.arch2infos_less[index])
-          print('>' * 40 + '  12 epochs ' + '>' * 40)
+          print('>' * 40 + ' {:03d} epochs '.format(self.arch2infos_less[index].get_total_epoch()) + '>' * 40)
           print('\n'.join(strings))
           print('<' * 40 + '------------' + '<' * 40)
       else:
         print('This index ({:}) is out of range (0~{:}).'.format(index, len(self.meta_archs)))
 
-  # This func shows how to read the string-based architecture encoding
-  #   the same as the `str2structure` func in `AutoDL-Projects/lib/models/cell_searchs/genotypes.py`
-  # Usage:
-  #   arch = api.str2lists( '|nor_conv_1x1~0|+|none~0|none~1|+|none~0|none~1|skip_connect~2|' )
-  #   print ('there are {:} nodes in this arch'.format(len(arch)+1)) # arch is a list
-  #   for i, node in enumerate(arch):
-  #     print('the {:}-th node is the sum of these {:} nodes with op: {:}'.format(i+1, len(node), node))
+  def statistics(self, dataset: Text, use_12epochs_result: bool) -> Dict[int, int]:
+    """
+    This function will count the number of total trials.
+    """
+    valid_datasets = ['cifar10-valid', 'cifar10', 'cifar100', 'ImageNet16-120']
+    if dataset not in valid_datasets:
+      raise ValueError('{:} not in {:}'.format(dataset, valid_datasets))
+    if use_12epochs_result: arch2infos = self.arch2infos_less
+    else                  : arch2infos = self.arch2infos_full
+    nums = defaultdict(lambda: 0)
+    for index in range(len(self)):
+      archInfo = arch2infos[index]
+      dataset_seed = archInfo.dataset_seed
+      if dataset not in dataset_seed:
+        nums[0] += 1
+      else:
+        nums[len(dataset_seed[dataset])] += 1
+    return dict(nums)
+
   @staticmethod
-  def str2lists(xstr):
-    assert isinstance(xstr, str), 'must take string (not {:}) as input'.format(type(xstr))
-    nodestrs = xstr.split('+')
+  def str2lists(arch_str: Text) -> List[tuple]:
+    """
+    This function shows how to read the string-based architecture encoding.
+      It is the same as the `str2structure` func in `AutoDL-Projects/lib/models/cell_searchs/genotypes.py`
+
+    :param
+      arch_str: the input is a string indicates the architecture topology, such as
+                    |nor_conv_1x1~0|+|none~0|none~1|+|none~0|none~1|skip_connect~2|
+    :return: a list of tuple, contains multiple (op, input_node_index) pairs.
+
+    :usage
+      arch = api.str2lists( '|nor_conv_1x1~0|+|none~0|none~1|+|none~0|none~1|skip_connect~2|' )
+      print ('there are {:} nodes in this arch'.format(len(arch)+1)) # arch is a list
+      for i, node in enumerate(arch):
+        print('the {:}-th node is the sum of these {:} nodes with op: {:}'.format(i+1, len(node), node))
+    """
+    node_strs = arch_str.split('+')
     genotypes = []
-    for i, node_str in enumerate(nodestrs):
+    for i, node_str in enumerate(node_strs):
       inputs = list(filter(lambda x: x != '', node_str.split('|')))
       for xinput in inputs: assert len(xinput.split('~')) == 2, 'invalid input length : {:}'.format(xinput)
       inputs = ( xi.split('~') for xi in inputs )
@@ -289,37 +475,43 @@ class NASBench201API(object):
       genotypes.append( input_infos )
     return genotypes
 
-  # This func shows how to convert the string-based architecture encoding to the encoding strategy in NAS-Bench-101
-  # Usage:
-  #   # this will return a numpy matrix (2-D np.array)
-  #   matrix = api.str2matrix( '|nor_conv_1x1~0|+|none~0|none~1|+|none~0|none~1|skip_connect~2|' )
-  #   # This matrix is 4-by-4 matrix representing a cell with 4 nodes (only the lower left triangle is useful).
-  #      [ [0, 0, 0, 0],  # the first line represents the input (0-th) node
-  #        [2, 0, 0, 0],  # the second line represents the 1-st node, is calculated by 2-th-op( 0-th-node )
-  #        [0, 0, 0, 0],  # the third line represents the 2-nd node, is calculated by 0-th-op( 0-th-node ) + 0-th-op( 1-th-node )
-  #        [0, 0, 1, 0] ] # the fourth line represents the 3-rd node, is calculated by 0-th-op( 0-th-node ) + 0-th-op( 1-th-node ) + 1-th-op( 2-th-node )
-  #   In NAS-Bench-201 search space, 0-th-op is 'none', 1-th-op is 'skip_connect'
-  #      2-th-op is 'nor_conv_1x1', 3-th-op is 'nor_conv_3x3', 4-th-op is 'avg_pool_3x3'.
   @staticmethod
-  def str2matrix(xstr):
-    assert isinstance(xstr, str), 'must take string (not {:}) as input'.format(type(xstr))
-    # this only support NAS-Bench-201 search space
-    # this defination will be consistant with this line https://github.com/D-X-Y/AutoDL-Projects/blob/master/lib/models/cell_operations.py#L24
-    # If a node has two input-edges from the same node, this function does not work. One edge will be overleaped.
-    NAS_BENCH_201         = ['none', 'skip_connect', 'nor_conv_1x1', 'nor_conv_3x3', 'avg_pool_3x3']
-    nodestrs = xstr.split('+')
-    num_nodes = len(nodestrs) + 1
-    matrix = np.zeros((num_nodes,num_nodes))
-    for i, node_str in enumerate(nodestrs):
+  def str2matrix(arch_str: Text,
+                 search_space: List[Text] = ['none', 'skip_connect', 'nor_conv_1x1', 'nor_conv_3x3', 'avg_pool_3x3']) -> np.ndarray:
+    """
+    This func shows how to convert the string-based architecture encoding to the encoding strategy in NAS-Bench-101.
+
+    :param
+      arch_str: the input is a string indicates the architecture topology, such as
+                    |nor_conv_1x1~0|+|none~0|none~1|+|none~0|none~1|skip_connect~2|
+      search_space: a list of operation string, the default list is the search space for NAS-Bench-201
+        the default value should be be consistent with this line https://github.com/D-X-Y/AutoDL-Projects/blob/master/lib/models/cell_operations.py#L24
+    :return
+      the numpy matrix (2-D np.ndarray) representing the DAG of this architecture topology
+    :usage
+      matrix = api.str2matrix( '|nor_conv_1x1~0|+|none~0|none~1|+|none~0|none~1|skip_connect~2|' )
+      This matrix is 4-by-4 matrix representing a cell with 4 nodes (only the lower left triangle is useful).
+         [ [0, 0, 0, 0],  # the first line represents the input (0-th) node
+           [2, 0, 0, 0],  # the second line represents the 1-st node, is calculated by 2-th-op( 0-th-node )
+           [0, 0, 0, 0],  # the third line represents the 2-nd node, is calculated by 0-th-op( 0-th-node ) + 0-th-op( 1-th-node )
+           [0, 0, 1, 0] ] # the fourth line represents the 3-rd node, is calculated by 0-th-op( 0-th-node ) + 0-th-op( 1-th-node ) + 1-th-op( 2-th-node )
+      In NAS-Bench-201 search space, 0-th-op is 'none', 1-th-op is 'skip_connect',
+         2-th-op is 'nor_conv_1x1', 3-th-op is 'nor_conv_3x3', 4-th-op is 'avg_pool_3x3'.
+    :(NOTE)
+      If a node has two input-edges from the same node, this function does not work. One edge will be overlapped.
+    """
+    node_strs = arch_str.split('+')
+    num_nodes = len(node_strs) + 1
+    matrix = np.zeros((num_nodes, num_nodes))
+    for i, node_str in enumerate(node_strs):
       inputs = list(filter(lambda x: x != '', node_str.split('|')))
       for xinput in inputs: assert len(xinput.split('~')) == 2, 'invalid input length : {:}'.format(xinput)
       for xi in inputs:
         op, idx = xi.split('~')
-        if op not in NAS_BENCH_201: raise ValueError('this op ({:}) is not in {:}'.format(op, NAS_BENCH_201))
-        op_idx, node_idx = NAS_BENCH_201.index(op), int(idx)
+        if op not in search_space: raise ValueError('this op ({:}) is not in {:}'.format(op, search_space))
+        op_idx, node_idx = search_space.index(op), int(idx)
         matrix[i+1, node_idx] = op_idx
     return matrix
-
 
 
 class ArchResults(object):
@@ -331,15 +523,15 @@ class ArchResults(object):
     self.dataset_seed = dict()
     self.clear_net_done = False
 
-  def get_comput_costs(self, dataset):
+  def get_compute_costs(self, dataset):
     x_seeds = self.dataset_seed[dataset]
     results = [self.all_results[ (dataset, seed) ] for seed in x_seeds]
 
-    flops      = [result.flop for result in results]
-    params     = [result.params for result in results]
-    lantencies = [result.get_latency() for result in results]
-    lantencies = [x for x in lantencies if x > 0]
-    mean_latency = np.mean(lantencies) if len(lantencies) > 0 else None
+    flops     = [result.flop for result in results]
+    params    = [result.params for result in results]
+    latencies = [result.get_latency() for result in results]
+    latencies = [x for x in latencies if x > 0]
+    mean_latency = np.mean(latencies) if len(latencies) > 0 else None
     time_infos = defaultdict(list)
     for result in results:
       time_info = result.get_times()
@@ -355,6 +547,37 @@ class ArchResults(object):
     return info
 
   def get_metrics(self, dataset, setname, iepoch=None, is_random=False):
+    """
+      This `get_metrics` function is used to obtain obtain the loss, accuracy, etc information on a specific dataset.
+      If not specify, each set refer to the proposed split in NAS-Bench-201 paper.
+      If some args return None or raise error, then it is not avaliable.
+      ========================================
+      Args [dataset] (4 possible options):
+        -- cifar10-valid : training the model on the CIFAR-10 training set.
+        -- cifar10 : training the model on the CIFAR-10 training + validation set.
+        -- cifar100 : training the model on the CIFAR-100 training set.
+        -- ImageNet16-120 : training the model on the ImageNet16-120 training set.
+      Args [setname] (each dataset has different setnames):
+        -- When dataset = cifar10-valid, you can use 'train', 'x-valid', 'ori-test'
+        ------ 'train' : the metric on the training set.
+        ------ 'x-valid' : the metric on the validation set.
+        ------ 'ori-test' : the metric on the test set.
+        -- When dataset = cifar10, you can use 'train', 'ori-test'.
+        ------ 'train' : the metric on the training + validation set.
+        ------ 'ori-test' : the metric on the test set.
+        -- When dataset = cifar100 or ImageNet16-120, you can use 'train', 'ori-test', 'x-valid', 'x-test'
+        ------ 'train' : the metric on the training set.
+        ------ 'x-valid' : the metric on the validation set.
+        ------ 'x-test' : the metric on the test set.
+        ------ 'ori-test' : the metric on the validation + test set.
+      Args [iepoch] (None or an integer in [0, the-number-of-total-training-epochs)
+        ------ None : return the metric after the last training epoch.
+        ------ an integer i : return the metric after the i-th training epoch.
+      Args [is_random]:
+        ------ True : return the metric of a randomly selected trial.
+        ------ False : return the averaged metric of all avaliable trials.
+        ------ an integer indicating the 'seed' value : return the metric of a specific trial (whose random seed is 'is_random').
+    """
     x_seeds = self.dataset_seed[dataset]
     results = [self.all_results[ (dataset, seed) ] for seed in x_seeds]
     infos   = defaultdict(list)
@@ -390,19 +613,74 @@ class ArchResults(object):
   def get_dataset_seeds(self, dataset):
     return copy.deepcopy( self.dataset_seed[dataset] )
 
-  def get_net_param(self, dataset, seed=None):
+  def get_net_param(self, dataset: Text, seed: Union[None, int] =None):
+    """
+    This function will return the trained network's weights on the 'dataset'.
+    :arg
+      dataset: one of 'cifar10-valid', 'cifar10', 'cifar100', and 'ImageNet16-120'.
+      seed: an integer indicates the seed value or None that indicates returing all trials.
+    """
     if seed is None:
       x_seeds = self.dataset_seed[dataset]
       return {seed: self.all_results[(dataset, seed)].get_net_param() for seed in x_seeds}
     else:
       return self.all_results[(dataset, seed)].get_net_param()
 
+  def reset_latency(self, dataset: Text, seed: Union[None, Text], latency: float) -> None:
+    """This function is used to reset the latency in all corresponding ResultsCount(s)."""
+    if seed is None:
+      for seed in self.dataset_seed[dataset]:
+        self.all_results[(dataset, seed)].update_latency([latency])
+    else:
+      self.all_results[(dataset, seed)].update_latency([latency])
+
+  def reset_pseudo_train_times(self, dataset: Text, seed: Union[None, Text], estimated_per_epoch_time: float) -> None:
+    """This function is used to reset the train-times in all corresponding ResultsCount(s)."""
+    if seed is None:
+      for seed in self.dataset_seed[dataset]:
+        self.all_results[(dataset, seed)].reset_pseudo_train_times(estimated_per_epoch_time)
+    else:
+      self.all_results[(dataset, seed)].reset_pseudo_train_times(estimated_per_epoch_time)
+
+  def reset_pseudo_eval_times(self, dataset: Text, seed: Union[None, Text], eval_name: Text, estimated_per_epoch_time: float) -> None:
+    """This function is used to reset the eval-times in all corresponding ResultsCount(s)."""
+    if seed is None:
+      for seed in self.dataset_seed[dataset]:
+        self.all_results[(dataset, seed)].reset_pseudo_eval_times(eval_name, estimated_per_epoch_time)
+    else:
+      self.all_results[(dataset, seed)].reset_pseudo_eval_times(eval_name, estimated_per_epoch_time)
+
+  def get_latency(self, dataset: Text) -> float:
+    """Get the latency of a model on the target dataset. [Timestamp: 2020.03.09]"""
+    latencies = []
+    for seed in self.dataset_seed[dataset]:
+      latency = self.all_results[(dataset, seed)].get_latency()
+      if not isinstance(latency, float) or latency <= 0:
+        raise ValueError('invalid latency of {:} for {:} with {:}'.format(dataset))
+      latencies.append(latency)
+    return sum(latencies) / len(latencies)
+
+  def get_total_epoch(self, dataset=None):
+    """Return the total number of training epochs."""
+    if dataset is None:
+      epochss = []
+      for xdata, x_seeds in self.dataset_seed.items():
+        epochss += [self.all_results[(xdata, seed)].get_total_epoch() for seed in x_seeds]
+    elif isinstance(dataset, str):
+      x_seeds = self.dataset_seed[dataset]
+      epochss = [self.all_results[(dataset, seed)].get_total_epoch() for seed in x_seeds]
+    else:
+      raise ValueError('invalid dataset={:}'.format(dataset))
+    if len(set(epochss)) > 1: raise ValueError('Each trial mush have the same number of training epochs : {:}'.format(epochss))
+    return epochss[-1]
+
   def query(self, dataset, seed=None):
+    """Return the ResultsCount object (containing all information of a single trial) for 'dataset' and 'seed'"""
     if seed is None:
       x_seeds = self.dataset_seed[dataset]
-      return {seed: self.all_results[ (dataset, seed) ] for seed in x_seeds}
+      return {seed: self.all_results[(dataset, seed)] for seed in x_seeds}
     else:
-      return self.all_results[ (dataset, seed) ]
+      return self.all_results[(dataset, seed)]
 
   def arch_idx_str(self):
     return '{:06d}'.format(self.arch_index)
@@ -447,7 +725,7 @@ class ArchResults(object):
   def create_from_state_dict(state_dict_or_file):
     x = ArchResults(-1, -1)
     if isinstance(state_dict_or_file, str): # a file path
-      state_dict = torch.load(state_dict_or_file)
+      state_dict = torch.load(state_dict_or_file, map_location='cpu')
     elif isinstance(state_dict_or_file, dict):
       state_dict = state_dict_or_file
     else:
@@ -455,16 +733,34 @@ class ArchResults(object):
     x.load_state_dict(state_dict)
     return x
 
+  # This function is used to clear the weights saved in each 'result'
+  # This can help reduce the memory footprint.
   def clear_params(self):
     for key, result in self.all_results.items():
+      del result.net_state_dict
       result.net_state_dict = None
-    self.clear_net_done = True 
+    self.clear_net_done = True
+
+  def debug_test(self):
+    """This function is used for me to debug and test, which will call most methods."""
+    all_dataset = ['cifar10-valid', 'cifar10', 'cifar100', 'ImageNet16-120']
+    for dataset in all_dataset:
+      print('---->>>> {:}'.format(dataset))
+      print('The latency on {:} is {:} s'.format(dataset, self.get_latency(dataset)))
+      for seed in self.dataset_seed[dataset]:
+        result = self.all_results[(dataset, seed)]
+        print('  ==>> result = {:}'.format(result))
+        print('  ==>> cost = {:}'.format(result.get_times()))
 
   def __repr__(self):
     return ('{name}(arch-index={index}, arch={arch}, {num} runs, clear={clear})'.format(name=self.__class__.__name__, index=self.arch_index, arch=self.arch_str, num=len(self.all_results), clear=self.clear_net_done))
-    
 
 
+"""
+This class (ResultsCount) is used to save the information of one trial for a single architecture.
+I did not write much comment for this class, because it is the lowest-level class in NAS-Bench-201 API, which will be rarely called.
+If you have any question regarding this class, please open an issue or email me.
+"""
 class ResultsCount(object):
 
   def __init__(self, name, state_dict, train_accs, train_losses, params, flop, arch_config, seed, epochs, latency):
@@ -483,11 +779,24 @@ class ResultsCount(object):
     # evaluation results
     self.reset_eval()
 
-  def update_train_info(self, train_acc1es, train_acc5es, train_losses, train_times):
+  def update_train_info(self, train_acc1es, train_acc5es, train_losses, train_times) -> None:
     self.train_acc1es = train_acc1es
     self.train_acc5es = train_acc5es
     self.train_losses = train_losses
     self.train_times  = train_times
+
+  def reset_pseudo_train_times(self, estimated_per_epoch_time: float) -> None:
+    """Assign the training times."""
+    train_times = OrderedDict()
+    for i in range(self.epochs):
+      train_times[i] = estimated_per_epoch_time
+    self.train_times = train_times
+
+  def reset_pseudo_eval_times(self, eval_name: Text, estimated_per_epoch_time: float) -> None:
+    """Assign the evaluation times."""
+    if eval_name not in self.eval_names: raise ValueError('invalid eval name : {:}'.format(eval_name))
+    for i in range(self.epochs):
+      self.eval_times['{:}@{:}'.format(eval_name,i)] = estimated_per_epoch_time
 
   def reset_eval(self):
     self.eval_names  = []
@@ -497,6 +806,11 @@ class ResultsCount(object):
 
   def update_latency(self, latency):
     self.latency = copy.deepcopy( latency )
+
+  def get_latency(self) -> float:
+    """Return the latency value in seconds. -1 represents not avaliable ; otherwise it should be a float value"""
+    if self.latency is None: return -1.0
+    else: return sum(self.latency) / len(self.latency)
 
   def update_eval(self, accs, losses, times):  # new version
     data_names = set([x.split('@')[0] for x in accs.keys()])
@@ -522,21 +836,22 @@ class ResultsCount(object):
     set_name = '[' + ', '.join(self.eval_names) + ']'
     return ('{name}({xname}, arch={arch}, FLOP={flop:.2f}M, Param={param:.3f}MB, seed={seed}, {num_eval} eval-sets: {set_name})'.format(name=self.__class__.__name__, xname=self.name, arch=self.arch_config['arch_str'], flop=self.flop, param=self.params, seed=self.seed, num_eval=num_eval, set_name=set_name))
 
-  def get_latency(self):
-    if self.latency is None: return -1
-    else: return sum(self.latency) / len(self.latency)
+  def get_total_epoch(self):
+    return copy.deepcopy(self.epochs)
 
   def get_times(self):
+    """Obtain the information regarding both training and evaluation time."""
     if self.train_times is not None and isinstance(self.train_times, dict):
       train_times = list( self.train_times.values() )
       time_info = {'T-train@epoch': np.mean(train_times), 'T-train@total': np.sum(train_times)}
-      for name in self.eval_names:
+    else:
+      time_info = {'T-train@epoch':                 None, 'T-train@total':               None }
+    for name in self.eval_names:
+      try:
         xtimes = [self.eval_times['{:}@{:}'.format(name,i)] for i in range(self.epochs)]
         time_info['T-{:}@epoch'.format(name)] = np.mean(xtimes)
         time_info['T-{:}@total'.format(name)] = np.sum(xtimes)
-    else:
-      time_info = {'T-train@epoch':                 None, 'T-train@total':               None }
-      for name in self.eval_names:
+      except:
         time_info['T-{:}@epoch'.format(name)] = None
         time_info['T-{:}@total'.format(name)] = None
     return time_info
@@ -544,6 +859,7 @@ class ResultsCount(object):
   def get_eval_set(self):
     return self.eval_names
 
+  # get the training information
   def get_train(self, iepoch=None):
     if iepoch is None: iepoch = self.epochs-1
     assert 0 <= iepoch < self.epochs, 'invalid iepoch={:} < {:}'.format(iepoch, self.epochs)
@@ -558,6 +874,7 @@ class ResultsCount(object):
             'all_time': atime}
 
   def get_eval(self, name, iepoch=None):
+    """Get the evaluation information ; there could be multiple evaluation sets (identified by the 'name' argument)."""
     if iepoch is None: iepoch = self.epochs-1
     assert 0 <= iepoch < self.epochs, 'invalid iepoch={:} < {:}'.format(iepoch, self.epochs)
     if isinstance(self.eval_times,dict) and len(self.eval_times) > 0:
@@ -570,14 +887,20 @@ class ResultsCount(object):
             'cur_time': xtime,
             'all_time': atime}
 
-  def get_net_param(self):
-    return self.net_state_dict
+  def get_net_param(self, clone=False):
+    if clone: return copy.deepcopy(self.net_state_dict)
+    else: return self.net_state_dict
 
   def get_config(self, str2structure):
-    #return copy.deepcopy(self.arch_config)
-    return {'name': 'infer.tiny', 'C': self.arch_config['channel'], \
-            'N'   : self.arch_config['num_cells'], \
-            'genotype': str2structure(self.arch_config['arch_str']), 'num_classes': self.arch_config['class_num']}
+    """This function is used to obtain the config dict for this architecture."""
+    if str2structure is None:
+      return {'name': 'infer.tiny', 'C': self.arch_config['channel'],
+              'N'   : self.arch_config['num_cells'],
+              'arch_str': self.arch_config['arch_str'], 'num_classes': self.arch_config['class_num']}
+    else:
+      return {'name': 'infer.tiny', 'C': self.arch_config['channel'],
+              'N'   : self.arch_config['num_cells'],
+              'genotype': str2structure(self.arch_config['arch_str']), 'num_classes': self.arch_config['class_num']}
 
   def state_dict(self):
     _state_dict = {key: value for key, value in self.__dict__.items()}
