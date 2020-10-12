@@ -1,8 +1,6 @@
 # NAS-BENCH-201 has been extended to [NATS-Bench](https://xuanyidong.com/assets/projects/NATS-Bench)
 
-**Since our NAS-BENCH-201 has been extended to NATS-Bench, this repo is deprecated and not maintained.
-Please use [NATS-Bench](https://github.com/D-X-Y/NATS-Bench), which has 5x more architecture information and faster API than NAS-BENCH-201.
-**
+**Since our NAS-BENCH-201 has been extended to NATS-Bench, this repo is deprecated and not maintained. Please use [NATS-Bench](https://github.com/D-X-Y/NATS-Bench), which has 5x more architecture information and faster API than NAS-BENCH-201.**
 
 # [NAS-BENCH-201: Extending the Scope of Reproducible Neural Architecture Search](https://openreview.net/forum?id=HJxyZkBKDr)
 
@@ -148,7 +146,7 @@ archRes = ArchResults.create_from_state_dict(xdata['full']) # load trials traine
 
 print(archRes.arch_idx_str())      # print the index of this architecture 
 print(archRes.get_dataset_names()) # print the supported training data
-print(archRes.get_comput_costs('cifar10-valid')) # print all computational info when training on cifar10-valid 
+print(archRes.get_compute_costs('cifar10-valid')) # print all computational info when training on cifar10-valid 
 print(archRes.get_metrics('cifar10-valid', 'x-valid', None, False)) # print the average loss/accuracy/time on all trials
 print(archRes.get_metrics('cifar10-valid', 'x-valid', None,  True)) # print loss/accuracy/time of a randomly selected trial
 ```

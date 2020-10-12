@@ -23,7 +23,7 @@ def test_api(path):
     # show the mean loss and accuracy of an architecture
     info = api.query_meta_info_by_index(index)  # This is an instance of `ArchResults`
     res_metrics = info.get_metrics('cifar10', 'train') # This is a dict with metric names as keys
-    cost_metrics = info.get_comput_costs('cifar100') # This is a dict with metric names as keys, e.g., flops, params, latency
+    cost_metrics = info.get_compute_costs('cifar100') # This is a dict with metric names as keys, e.g., flops, params, latency
 
     # get the detailed information
     results = api.query_by_index(index, 'cifar100') # a dict of all trials for 1st net on cifar100, where the key is the seed
