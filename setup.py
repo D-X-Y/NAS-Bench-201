@@ -5,6 +5,7 @@
 # [2020.03.09] Upgrade the API to v1.2
 # [2020.03.16] Upgrade the API to v1.3
 # [2020.06.30] Upgrade the API to v2.0
+# [2020.10.12] Upgrade the API to v2.1 -- deprecate this repo, switch to NATS-Bench.
 import os
 from setuptools import setup
 
@@ -16,7 +17,7 @@ def read(fname='README.md'):
 
 setup(
     name = "nas_bench_201",
-    version = "2.0",
+    version = "2.1",
     author = "Xuanyi Dong",
     author_email = "dongxuanyi888@gmail.com",
     description = "API for NAS-Bench-201 (a benchmark for neural architecture search).",

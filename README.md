@@ -1,3 +1,9 @@
+# NAS-BENCH-201 has been extended to [NATS-Bench](https://xuanyidong.com/assets/projects/NATS-Bench)
+
+**Since our NAS-BENCH-201 has been extended to NATS-Bench, this repo is deprecated and not maintained.
+Please use [NATS-Bench](https://github.com/D-X-Y/NATS-Bench), which has 5x more architecture information and faster API than NAS-BENCH-201.
+**
+
 # [NAS-BENCH-201: Extending the Scope of Reproducible Neural Architecture Search](https://openreview.net/forum?id=HJxyZkBKDr)
 
 We propose an algorithm-agnostic NAS benchmark (NAS-Bench-201) with a fixed search space, which provides a unified benchmark for almost any up-to-date NAS algorithms.
