@@ -79,12 +79,13 @@ cost_metrics = info.get_comput_costs('cifar100') # This is a dict with metric na
 # get the detailed information
 results = api.query_by_index(1, 'cifar100') # a dict of all trials for 1st net on cifar100, where the key is the seed
 print ('There are {:} trials for this architecture [{:}] on cifar100'.format(len(results), api[1]))
-print ('Latency : {:}'.format(results[0].get_latency()))
-print ('Train Info : {:}'.format(results[0].get_train()))
-print ('Valid Info : {:}'.format(results[0].get_eval('x-valid')))
-print ('Test  Info : {:}'.format(results[0].get_eval('x-test')))
-# for the metric after a specific epoch
-print ('Train Info [10-th epoch] : {:}'.format(results[0].get_train(10)))
+for seed, result in results.items():
+  print ('Latency : {:}'.format(result.get_latency()))
+  print ('Train Info : {:}'.format(result.get_train()))
+  print ('Valid Info : {:}'.format(result.get_eval('x-valid')))
+  print ('Test  Info : {:}'.format(result.get_eval('x-test')))
+  # for the metric after a specific epoch
+  print ('Train Info [10-th epoch] : {:}'.format(result.get_train(10)))
 ```
 
 4. Query the index of an architecture by string
