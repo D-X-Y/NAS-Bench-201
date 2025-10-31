@@ -1,4 +1,4 @@
-# NAS-BENCH-201 has been extended to [NATS-Bench](https://xuanyidong.com/assets/projects/NATS-Bench)
+# NAS-BENCH-201 has been extended to [NATS-Bench](https://github.com/D-X-Y/NATS-Bench)
 
 **Since our NAS-BENCH-201 has been extended to NATS-Bench, this repo is deprecated and not maintained. Please use [NATS-Bench](https://github.com/D-X-Y/NATS-Bench), which has 5x more architecture information and faster API than NAS-BENCH-201.**
 
